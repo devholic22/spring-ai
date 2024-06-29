@@ -43,7 +43,7 @@ import io.weaviate.client.v1.graphql.query.fields.Field;
 import io.weaviate.client.v1.graphql.query.fields.Fields;
 
 import org.springframework.ai.document.Document;
-import org.springframework.ai.embedding.EmbeddingClient;
+import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.vectorstore.WeaviateVectorStore.WeaviateVectorStoreConfig.ConsistentLevel;
 import org.springframework.ai.vectorstore.WeaviateVectorStore.WeaviateVectorStoreConfig.MetadataField;
 import org.springframework.beans.factory.InitializingBean;
@@ -61,6 +61,7 @@ import org.springframework.util.StringUtils;
  *
  * @author Christian Tzolov
  * @author Eddú Meléndez
+ * @author Josh Long
  */
 public class WeaviateVectorStore implements VectorStore, InitializingBean {
 
@@ -80,7 +81,7 @@ public class WeaviateVectorStore implements VectorStore, InitializingBean {
 
 	private static final String ADDITIONAL_VECTOR_FIELD_NAME = "vector";
 
-	private final EmbeddingClient embeddingClient;
+	private final EmbeddingModel embeddingModel;
 
 	private final WeaviateClient weaviateClient;
 
@@ -114,7 +115,7 @@ public class WeaviateVectorStore implements VectorStore, InitializingBean {
 	 * Used to serialize/deserialize the document metadata when stored/retrieved from the
 	 * weaviate vector store.
 	 */
-	private final ObjectMapper objetMapper = new ObjectMapper();
+	private final ObjectMapper objectMapper = new ObjectMapper();
 
 	/**
 	 * Configuration class for the WeaviateVectorStore.
@@ -277,14 +278,15 @@ public class WeaviateVectorStore implements VectorStore, InitializingBean {
 	/**
 	 * Constructs a new WeaviateVectorStore.
 	 * @param vectorStoreConfig The configuration for the store.
-	 * @param embeddingClient The client for embedding operations.
+	 * @param embeddingModel The client for embedding operations.
 	 */
-	public WeaviateVectorStore(WeaviateVectorStoreConfig vectorStoreConfig, EmbeddingClient embeddingClient,
-			WeaviateClient weaviateClient) {
+	public WeaviateVectorStore(WeaviateVectorStoreConfig vectorStoreConfig, EmbeddingModel embeddingModel,
+			WeaviateClient weaviateClient, boolean initializeSchema) {
 		Assert.notNull(vectorStoreConfig, "WeaviateVectorStoreConfig must not be null");
-		Assert.notNull(embeddingClient, "EmbeddingClient must not be null");
+		Assert.notNull(embeddingModel, "EmbeddingModel must not be null");
 
-		this.embeddingClient = embeddingClient;
+		this.initializeSchema = initializeSchema;
+		this.embeddingModel = embeddingModel;
 		this.consistencyLevel = vectorStoreConfig.consistencyLevel;
 		this.weaviateObjectClass = vectorStoreConfig.weaviateObjectClass;
 		this.filterMetadataFields = vectorStoreConfig.filterMetadataFields;
@@ -360,7 +362,7 @@ public class WeaviateVectorStore implements VectorStore, InitializingBean {
 	private WeaviateObject toWeaviateObject(Document document) {
 
 		if (CollectionUtils.isEmpty(document.getEmbedding())) {
-			List<Double> embedding = this.embeddingClient.embed(document);
+			List<Double> embedding = this.embeddingModel.embed(document);
 			document.setEmbedding(embedding);
 		}
 
@@ -368,7 +370,7 @@ public class WeaviateVectorStore implements VectorStore, InitializingBean {
 		Map<String, Object> fields = new HashMap<>();
 		fields.put(CONTENT_FIELD_NAME, document.getContent());
 		try {
-			String metadataString = this.objetMapper.writeValueAsString(document.getMetadata());
+			String metadataString = this.objectMapper.writeValueAsString(document.getMetadata());
 			fields.put(METADATA_FIELD_NAME, metadataString);
 		}
 		catch (JsonProcessingException e) {
@@ -420,7 +422,7 @@ public class WeaviateVectorStore implements VectorStore, InitializingBean {
 	@Override
 	public List<Document> similaritySearch(SearchRequest request) {
 
-		Float[] embedding = toFloatArray(this.embeddingClient.embed(request.getQuery()));
+		Float[] embedding = toFloatArray(this.embeddingModel.embed(request.getQuery()));
 
 		GetBuilder.GetBuilderBuilder builder = GetBuilder.builder();
 
@@ -499,7 +501,7 @@ public class WeaviateVectorStore implements VectorStore, InitializingBean {
 		try {
 			String metadataJson = (String) item.get(METADATA_FIELD_NAME);
 			if (StringUtils.hasText(metadataJson)) {
-				metadata.putAll(this.objetMapper.readValue(metadataJson, Map.class));
+				metadata.putAll(this.objectMapper.readValue(metadataJson, Map.class));
 			}
 		}
 		catch (Exception e) {
@@ -524,8 +526,14 @@ public class WeaviateVectorStore implements VectorStore, InitializingBean {
 		return doubleList.stream().map(Number::floatValue).toList().toArray(new Float[0]);
 	}
 
+	private final boolean initializeSchema;
+
 	@Override
 	public void afterPropertiesSet() throws Exception {
+
+		if (!this.initializeSchema) {
+			return;
+		}
 
 		Map<String, Object> metadata = new HashMap<>();
 		if (!CollectionUtils.isEmpty(this.filterMetadataFields)) {

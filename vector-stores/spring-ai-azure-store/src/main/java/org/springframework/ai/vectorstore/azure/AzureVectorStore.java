@@ -15,13 +15,6 @@
  */
 package org.springframework.ai.vectorstore.azure;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.stream.Collectors;
-
 import com.alibaba.fastjson2.JSONObject;
 import com.alibaba.fastjson2.TypeReference;
 import com.azure.core.util.Context;
@@ -43,9 +36,8 @@ import com.azure.search.documents.models.VectorSearchOptions;
 import com.azure.search.documents.models.VectorizedQuery;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import org.springframework.ai.document.Document;
-import org.springframework.ai.embedding.EmbeddingClient;
+import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.ai.vectorstore.filter.FilterExpressionConverter;
@@ -53,6 +45,13 @@ import org.springframework.beans.factory.InitializingBean;
 import org.springframework.util.Assert;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.stream.Collectors;
 
 /**
  * Uses Azure Cognitive Search as a backing vector store. Documents can be preloaded into
@@ -63,6 +62,7 @@ import org.springframework.util.StringUtils;
  * @author Greg Meyer
  * @author Xiangyang Yu
  * @author Christian Tzolov
+ * @author Josh Long
  */
 public class AzureVectorStore implements VectorStore, InitializingBean {
 
@@ -92,7 +92,7 @@ public class AzureVectorStore implements VectorStore, InitializingBean {
 
 	private final SearchIndexClient searchIndexClient;
 
-	private final EmbeddingClient embeddingClient;
+	private final EmbeddingModel embeddingModel;
 
 	private SearchClient searchClient;
 
@@ -104,12 +104,14 @@ public class AzureVectorStore implements VectorStore, InitializingBean {
 
 	private String indexName = DEFAULT_INDEX_NAME;
 
+	private final boolean initializeSchema;
+
 	/**
 	 * List of metadata fields (as field name and type) that can be used in similarity
 	 * search query filter expressions. The {@link Document#getMetadata()} can contain
 	 * arbitrary number of metadata entries, but only the fields listed here can be used
 	 * in the search filter expressions.
-	 *
+	 * <p>
 	 * If new entries are added ot the filterMetadataFields the affected documents must be
 	 * (re)updated.
 	 */
@@ -146,29 +148,31 @@ public class AzureVectorStore implements VectorStore, InitializingBean {
 	 * Constructs a new AzureCognitiveSearchVectorStore.
 	 * @param searchIndexClient A pre-configured Azure {@link SearchIndexClient} that CRUD
 	 * for Azure search indexes and factory for {@link SearchClient}.
-	 * @param embeddingClient The client for embedding operations.
+	 * @param embeddingModel The client for embedding operations.
 	 */
-	public AzureVectorStore(SearchIndexClient searchIndexClient, EmbeddingClient embeddingClient) {
-		this(searchIndexClient, embeddingClient, List.of());
+	public AzureVectorStore(SearchIndexClient searchIndexClient, EmbeddingModel embeddingModel,
+			boolean initializeSchema) {
+		this(searchIndexClient, embeddingModel, initializeSchema, List.of());
 	}
 
 	/**
 	 * Constructs a new AzureCognitiveSearchVectorStore.
 	 * @param searchIndexClient A pre-configured Azure {@link SearchIndexClient} that CRUD
 	 * for Azure search indexes and factory for {@link SearchClient}.
-	 * @param embeddingClient The client for embedding operations.
+	 * @param embeddingModel The client for embedding operations.
 	 * @param filterMetadataFields List of metadata fields (as field name and type) that
 	 * can be used in similarity search query filter expressions.
 	 */
-	public AzureVectorStore(SearchIndexClient searchIndexClient, EmbeddingClient embeddingClient,
-			List<MetadataField> filterMetadataFields) {
+	public AzureVectorStore(SearchIndexClient searchIndexClient, EmbeddingModel embeddingModel,
+			boolean initializeSchema, List<MetadataField> filterMetadataFields) {
 
-		Assert.notNull(embeddingClient, "The embedding client can not be null.");
+		Assert.notNull(embeddingModel, "The embedding model can not be null.");
 		Assert.notNull(searchIndexClient, "The search index client can not be null.");
 		Assert.notNull(filterMetadataFields, "The filterMetadataFields can not be null.");
 
+		this.initializeSchema = initializeSchema;
 		this.searchIndexClient = searchIndexClient;
-		this.embeddingClient = embeddingClient;
+		this.embeddingModel = embeddingModel;
 		this.filterMetadataFields = filterMetadataFields;
 		this.filterExpressionConverter = new AzureAiSearchFilterExpressionConverter(filterMetadataFields);
 	}
@@ -211,7 +215,7 @@ public class AzureVectorStore implements VectorStore, InitializingBean {
 		}
 
 		final var searchDocuments = documents.stream().map(document -> {
-			final var embeddings = this.embeddingClient.embed(document);
+			final var embeddings = this.embeddingModel.embed(document);
 			SearchDocument searchDocument = new SearchDocument();
 			searchDocument.put(ID_FIELD_NAME, document.getId());
 			searchDocument.put(EMBEDDING_FIELD_NAME, embeddings);
@@ -277,7 +281,7 @@ public class AzureVectorStore implements VectorStore, InitializingBean {
 
 		Assert.notNull(request, "The search request must not be null.");
 
-		var searchEmbedding = toFloatList(embeddingClient.embed(request.getQuery()));
+		var searchEmbedding = toFloatList(embeddingModel.embed(request.getQuery()));
 
 		final var vectorQuery = new VectorizedQuery(searchEmbedding).setKNearestNeighborsCount(request.getTopK())
 			// Set the fields to compare the vector against. This is a comma-delimited
@@ -328,7 +332,12 @@ public class AzureVectorStore implements VectorStore, InitializingBean {
 	@Override
 	public void afterPropertiesSet() throws Exception {
 
-		int dimensions = this.embeddingClient.dimensions();
+		if (!this.initializeSchema) {
+			this.searchClient = this.searchIndexClient.getSearchClient(this.indexName);
+			return;
+		}
+
+		int dimensions = this.embeddingModel.dimensions();
 
 		List<SearchField> fields = new ArrayList<>();
 

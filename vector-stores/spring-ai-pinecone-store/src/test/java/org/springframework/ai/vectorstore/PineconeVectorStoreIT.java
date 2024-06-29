@@ -30,8 +30,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
 import org.springframework.ai.document.Document;
-import org.springframework.ai.embedding.EmbeddingClient;
-import org.springframework.ai.transformers.TransformersEmbeddingClient;
+import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.ai.transformers.TransformersEmbeddingModel;
 import org.springframework.ai.vectorstore.PineconeVectorStore.PineconeVectorStoreConfig;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
@@ -59,6 +59,8 @@ public class PineconeVectorStoreIT {
 
 	// NOTE: Leave it empty as for free tier as later doesn't support namespaces.
 	private static final String PINECONE_NAMESPACE = "";
+
+	private static final String CUSTOM_CONTENT_FIELD_NAME = "article";
 
 	List<Document> documents = List.of(
 			new Document("1", getText("classpath:/test/data/spring.ai.txt"), Map.of("meta1", "meta1")),
@@ -283,17 +285,18 @@ public class PineconeVectorStoreIT {
 				.withProjectId(PINECONE_PROJECT_ID)
 				.withIndexName(PINECONE_INDEX_NAME)
 				.withNamespace(PINECONE_NAMESPACE)
+				.withContentFieldName(CUSTOM_CONTENT_FIELD_NAME)
 				.build();
 		}
 
 		@Bean
-		public VectorStore vectorStore(PineconeVectorStoreConfig config, EmbeddingClient embeddingClient) {
-			return new PineconeVectorStore(config, embeddingClient);
+		public VectorStore vectorStore(PineconeVectorStoreConfig config, EmbeddingModel embeddingModel) {
+			return new PineconeVectorStore(config, embeddingModel);
 		}
 
 		@Bean
-		public TransformersEmbeddingClient embeddingClient() {
-			return new TransformersEmbeddingClient();
+		public TransformersEmbeddingModel embeddingModel() {
+			return new TransformersEmbeddingModel();
 		}
 
 	}

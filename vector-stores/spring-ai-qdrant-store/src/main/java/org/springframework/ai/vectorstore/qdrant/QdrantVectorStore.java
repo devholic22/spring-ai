@@ -15,23 +15,11 @@
  */
 package org.springframework.ai.vectorstore.qdrant;
 
-import static io.qdrant.client.PointIdFactory.id;
-import static io.qdrant.client.ValueFactory.value;
-import static io.qdrant.client.VectorsFactory.vectors;
-import static io.qdrant.client.WithPayloadSelectorFactory.enable;
-
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
-
-import org.springframework.ai.document.Document;
-import org.springframework.ai.embedding.EmbeddingClient;
-import org.springframework.ai.vectorstore.SearchRequest;
-import org.springframework.ai.vectorstore.VectorStore;
-import org.springframework.beans.factory.InitializingBean;
-import org.springframework.util.Assert;
 
 import io.qdrant.client.QdrantClient;
 import io.qdrant.client.grpc.Collections.Distance;
@@ -43,6 +31,17 @@ import io.qdrant.client.grpc.Points.PointStruct;
 import io.qdrant.client.grpc.Points.ScoredPoint;
 import io.qdrant.client.grpc.Points.SearchPoints;
 import io.qdrant.client.grpc.Points.UpdateStatus;
+import org.springframework.ai.document.Document;
+import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.ai.vectorstore.SearchRequest;
+import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.beans.factory.InitializingBean;
+import org.springframework.util.Assert;
+
+import static io.qdrant.client.PointIdFactory.id;
+import static io.qdrant.client.ValueFactory.value;
+import static io.qdrant.client.VectorsFactory.vectors;
+import static io.qdrant.client.WithPayloadSelectorFactory.enable;
 
 /**
  * Qdrant vectorStore implementation. This store supports creating, updating, deleting,
@@ -51,6 +50,7 @@ import io.qdrant.client.grpc.Points.UpdateStatus;
  * @author Anush Shetty
  * @author Christian Tzolov
  * @author Eddú Meléndez
+ * @author Josh Long
  * @since 0.8.1
  */
 public class QdrantVectorStore implements VectorStore, InitializingBean {
@@ -61,13 +61,15 @@ public class QdrantVectorStore implements VectorStore, InitializingBean {
 
 	public static final String DEFAULT_COLLECTION_NAME = "vector_store";
 
-	private final EmbeddingClient embeddingClient;
+	private final EmbeddingModel embeddingModel;
 
 	private final QdrantClient qdrantClient;
 
 	private final String collectionName;
 
 	private final QdrantFilterExpressionConverter filterExpressionConverter = new QdrantFilterExpressionConverter();
+
+	private final boolean initializeSchema;
 
 	/**
 	 * Configuration class for the QdrantVectorStore.
@@ -84,6 +86,7 @@ public class QdrantVectorStore implements VectorStore, InitializingBean {
 		 *
 		 * @param builder The configuration builder.
 		 */
+
 		private QdrantVectorStoreConfig(Builder builder) {
 			this.collectionName = builder.collectionName;
 		}
@@ -133,27 +136,29 @@ public class QdrantVectorStore implements VectorStore, InitializingBean {
 	/**
 	 * Constructs a new QdrantVectorStore.
 	 * @param config The configuration for the store.
-	 * @param embeddingClient The client for embedding operations.
+	 * @param embeddingModel The client for embedding operations.
 	 * @deprecated since 1.0.0 in favor of {@link QdrantVectorStore}.
 	 */
 	@Deprecated(since = "1.0.0", forRemoval = true)
-	public QdrantVectorStore(QdrantClient qdrantClient, QdrantVectorStoreConfig config,
-			EmbeddingClient embeddingClient) {
-		this(qdrantClient, config.collectionName, embeddingClient);
+	public QdrantVectorStore(QdrantClient qdrantClient, QdrantVectorStoreConfig config, EmbeddingModel embeddingModel,
+			boolean initializeSchema) {
+		this(qdrantClient, config.collectionName, embeddingModel, initializeSchema);
 	}
 
 	/**
 	 * Constructs a new QdrantVectorStore.
 	 * @param qdrantClient A {@link QdrantClient} instance for interfacing with Qdrant.
 	 * @param collectionName The name of the collection to use in Qdrant.
-	 * @param embeddingClient The client for embedding operations.
+	 * @param embeddingModel The client for embedding operations.
 	 */
-	public QdrantVectorStore(QdrantClient qdrantClient, String collectionName, EmbeddingClient embeddingClient) {
+	public QdrantVectorStore(QdrantClient qdrantClient, String collectionName, EmbeddingModel embeddingModel,
+			boolean initializeSchema) {
 		Assert.notNull(qdrantClient, "QdrantClient must not be null");
 		Assert.notNull(collectionName, "collectionName must not be null");
-		Assert.notNull(embeddingClient, "EmbeddingClient must not be null");
+		Assert.notNull(embeddingModel, "EmbeddingModel must not be null");
 
-		this.embeddingClient = embeddingClient;
+		this.initializeSchema = initializeSchema;
+		this.embeddingModel = embeddingModel;
 		this.collectionName = collectionName;
 		this.qdrantClient = qdrantClient;
 	}
@@ -167,7 +172,7 @@ public class QdrantVectorStore implements VectorStore, InitializingBean {
 		try {
 			List<PointStruct> points = documents.stream().map(document -> {
 				// Compute and assign an embedding to the document.
-				document.setEmbedding(this.embeddingClient.embed(document));
+				document.setEmbedding(this.embeddingModel.embed(document));
 
 				return PointStruct.newBuilder()
 					.setId(id(UUID.fromString(document.getId())))
@@ -215,7 +220,7 @@ public class QdrantVectorStore implements VectorStore, InitializingBean {
 					? this.filterExpressionConverter.convertExpression(request.getFilterExpression())
 					: Filter.getDefaultInstance();
 
-			List<Double> queryEmbedding = this.embeddingClient.embed(request.getQuery());
+			List<Double> queryEmbedding = this.embeddingModel.embed(request.getQuery());
 
 			var searchPoints = SearchPoints.newBuilder()
 				.setCollectionName(this.collectionName)
@@ -286,11 +291,15 @@ public class QdrantVectorStore implements VectorStore, InitializingBean {
 
 	@Override
 	public void afterPropertiesSet() throws Exception {
+
+		if (!this.initializeSchema)
+			return;
+
 		// Create the collection if it does not exist.
 		if (!isCollectionExists()) {
 			var vectorParams = VectorParams.newBuilder()
 				.setDistance(Distance.Cosine)
-				.setSize(this.embeddingClient.dimensions())
+				.setSize(this.embeddingModel.dimensions())
 				.build();
 			this.qdrantClient.createCollectionAsync(this.collectionName, vectorParams).get();
 		}

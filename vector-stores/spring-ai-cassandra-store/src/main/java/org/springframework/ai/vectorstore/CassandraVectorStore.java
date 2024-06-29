@@ -31,10 +31,9 @@ import com.datastax.oss.driver.shaded.guava.common.base.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
-import org.springframework.ai.embedding.EmbeddingClient;
+import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.vectorstore.CassandraVectorStoreConfig.SchemaColumn;
 import org.springframework.ai.vectorstore.filter.FilterExpressionConverter;
-import org.springframework.beans.factory.InitializingBean;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -57,7 +56,7 @@ import java.util.concurrent.ConcurrentMap;
  *
  * This class requires a CassandraVectorStoreConfig configuration object for
  * initialization, which includes settings like connection details, index name, column
- * names, etc. It also requires an EmbeddingClient to convert documents into embeddings
+ * names, etc. It also requires an EmbeddingModel to convert documents into embeddings
  * before storing them.
  *
  * A schema matching the configuration is automatically created if it doesn't exist.
@@ -73,7 +72,7 @@ import java.util.concurrent.ConcurrentMap;
  * change the schema server-side you need a new CassandraVectorStore instance.
  *
  * When adding documents with the method {@link #add(List<Document>)} it first calls
- * embeddingClient to create the embeddings. This is slow. Configure
+ * embeddingModel to create the embeddings. This is slow. Configure
  * {@link CassandraVectorStoreConfig.Builder#withFixedThreadPoolExecutorSize(int)}
  * accordingly to improve performance so embeddings are created and the documents are
  * added concurrently. The default concurrency is 16
@@ -86,10 +85,10 @@ import java.util.concurrent.ConcurrentMap;
  * @author Mick Semb Wever
  * @see VectorStore
  * @see org.springframework.ai.vectorstore.CassandraVectorStoreConfig
- * @see EmbeddingClient
+ * @see EmbeddingModel
  * @since 1.0.0
  */
-public class CassandraVectorStore implements VectorStore, InitializingBean, AutoCloseable {
+public class CassandraVectorStore implements VectorStore, AutoCloseable {
 
 	/**
 	 * Indexes are automatically created with COSINE. This can be changed manually via
@@ -113,7 +112,7 @@ public class CassandraVectorStore implements VectorStore, InitializingBean, Auto
 
 	private final CassandraVectorStoreConfig conf;
 
-	private final EmbeddingClient embeddingClient;
+	private final EmbeddingModel embeddingModel;
 
 	private final FilterExpressionConverter filterExpressionConverter;
 
@@ -125,14 +124,14 @@ public class CassandraVectorStore implements VectorStore, InitializingBean, Auto
 
 	private final Similarity similarity;
 
-	public CassandraVectorStore(CassandraVectorStoreConfig conf, EmbeddingClient embeddingClient) {
+	public CassandraVectorStore(CassandraVectorStoreConfig conf, EmbeddingModel embeddingModel) {
 
 		Preconditions.checkArgument(null != conf, "Config must not be null");
-		Preconditions.checkArgument(null != embeddingClient, "Embedding client must not be null");
+		Preconditions.checkArgument(null != embeddingModel, "Embedding model must not be null");
 
 		this.conf = conf;
-		this.embeddingClient = embeddingClient;
-		conf.ensureSchemaExists(embeddingClient.dimensions());
+		this.embeddingModel = embeddingModel;
+		conf.ensureSchemaExists(embeddingModel.dimensions());
 		prepareAddStatement(Set.of());
 		this.deleteStmt = prepareDeleteStatement();
 
@@ -159,7 +158,7 @@ public class CassandraVectorStore implements VectorStore, InitializingBean, Auto
 				List<Object> primaryKeyValues = this.conf.documentIdTranslator.apply(d.getId());
 
 				if (null == d.getEmbedding() || d.getEmbedding().isEmpty()) {
-					d.setEmbedding(this.embeddingClient.embed(d));
+					d.setEmbedding(this.embeddingModel.embed(d));
 				}
 
 				BoundStatementBuilder builder = prepareAddStatement(d.getMetadata().keySet()).boundStatementBuilder();
@@ -204,7 +203,7 @@ public class CassandraVectorStore implements VectorStore, InitializingBean, Auto
 	@Override
 	public List<Document> similaritySearch(SearchRequest request) {
 		Preconditions.checkArgument(request.getTopK() <= 1000);
-		var embedding = toFloatArray(this.embeddingClient.embed(request.getQuery()));
+		var embedding = toFloatArray(this.embeddingModel.embed(request.getQuery()));
 		CqlVector<Float> cqlVector = CqlVector.newInstance(embedding);
 
 		String whereClause = "";
@@ -247,16 +246,12 @@ public class CassandraVectorStore implements VectorStore, InitializingBean, Auto
 	}
 
 	@Override
-	public void afterPropertiesSet() {
-	}
-
-	@Override
 	public void close() throws Exception {
 		this.conf.close();
 	}
 
 	void checkSchemaValid() {
-		this.conf.checkSchemaValid(embeddingClient.dimensions());
+		this.conf.checkSchemaValid(embeddingModel.dimensions());
 	}
 
 	private Similarity getIndexSimilarity(TableMetadata metadata) {

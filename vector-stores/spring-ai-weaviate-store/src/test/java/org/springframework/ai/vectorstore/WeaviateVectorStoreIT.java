@@ -15,6 +15,8 @@
  */
 package org.springframework.ai.vectorstore;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
@@ -22,15 +24,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-import io.weaviate.client.Config;
-import io.weaviate.client.WeaviateClient;
 import org.junit.jupiter.api.Test;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-
 import org.springframework.ai.document.Document;
-import org.springframework.ai.embedding.EmbeddingClient;
-import org.springframework.ai.transformers.TransformersEmbeddingClient;
+import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.ai.transformers.TransformersEmbeddingModel;
 import org.springframework.ai.vectorstore.WeaviateVectorStore.WeaviateVectorStoreConfig;
 import org.springframework.ai.vectorstore.WeaviateVectorStore.WeaviateVectorStoreConfig.MetadataField;
 import org.springframework.boot.SpringBootConfiguration;
@@ -38,9 +35,13 @@ import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.io.DefaultResourceLoader;
+import org.testcontainers.containers.wait.strategy.Wait;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.weaviate.WeaviateContainer;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import io.weaviate.client.Config;
+import io.weaviate.client.WeaviateClient;
 
 /**
  * @author Christian Tzolov
@@ -50,7 +51,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 public class WeaviateVectorStoreIT {
 
 	@Container
-	static WeaviateContainer weaviateContainer = new WeaviateContainer("semitechnologies/weaviate:1.22.4");
+	static WeaviateContainer weaviateContainer = new WeaviateContainer("semitechnologies/weaviate:1.25.4")
+		.waitingFor(Wait.forHttp("/v1/.well-known/ready").forPort(8080));
+
+	;
 
 	private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
 		.withUserConfiguration(TestApplication.class);
@@ -243,7 +247,7 @@ public class WeaviateVectorStoreIT {
 	public static class TestApplication {
 
 		@Bean
-		public VectorStore vectorStore(EmbeddingClient embeddingClient) {
+		public VectorStore vectorStore(EmbeddingModel embeddingModel) {
 			WeaviateClient weaviateClient = new WeaviateClient(
 					new Config("http", weaviateContainer.getHttpHostAddress()));
 
@@ -252,14 +256,13 @@ public class WeaviateVectorStoreIT {
 				.withConsistencyLevel(WeaviateVectorStoreConfig.ConsistentLevel.ONE)
 				.build();
 
-			WeaviateVectorStore vectorStore = new WeaviateVectorStore(config, embeddingClient, weaviateClient);
+			return new WeaviateVectorStore(config, embeddingModel, weaviateClient, true);
 
-			return vectorStore;
 		}
 
 		@Bean
-		public EmbeddingClient embeddingClient() {
-			return new TransformersEmbeddingClient();
+		public EmbeddingModel embeddingModel() {
+			return new TransformersEmbeddingModel();
 		}
 
 	}

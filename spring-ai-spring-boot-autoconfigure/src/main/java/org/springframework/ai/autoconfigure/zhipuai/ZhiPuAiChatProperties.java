@@ -28,12 +28,12 @@ public class ZhiPuAiChatProperties extends ZhiPuAiParentProperties {
 
 	public static final String CONFIG_PREFIX = "spring.ai.zhipuai.chat";
 
-	public static final String DEFAULT_CHAT_MODEL = ZhiPuAiApi.ChatModel.GLM_3_Turbo.value;
+	public static final String DEFAULT_CHAT_MODEL = ZhiPuAiApi.ChatModel.GLM_4_Air.value;
 
 	private static final Double DEFAULT_TEMPERATURE = 0.7;
 
 	/**
-	 * Enable ZhiPuAI chat client.
+	 * Enable ZhiPuAI chat model.
 	 */
 	private boolean enabled = true;
 

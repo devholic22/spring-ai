@@ -29,12 +29,11 @@ import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
-import org.springframework.ai.embedding.EmbeddingClient;
+import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.vectorstore.filter.FilterExpressionConverter;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.util.Assert;
 import org.springframework.util.CollectionUtils;
-
 import redis.clients.jedis.JedisPooled;
 import redis.clients.jedis.Pipeline;
 import redis.clients.jedis.json.Path2;
@@ -63,14 +62,14 @@ import redis.clients.jedis.search.schemafields.VectorField.VectorAlgorithm;
  *
  * This class requires a RedisVectorStoreConfig configuration object for initialization,
  * which includes settings like Redis URI, index name, field names, and vector algorithms.
- * It also requires an EmbeddingClient to convert documents into embeddings before storing
+ * It also requires an EmbeddingModel to convert documents into embeddings before storing
  * them.
  *
  * @author Julien Ruaux
  * @author Christian Tzolov
  * @see VectorStore
  * @see RedisVectorStoreConfig
- * @see EmbeddingClient
+ * @see EmbeddingModel
  */
 public class RedisVectorStore implements VectorStore, InitializingBean {
 
@@ -246,6 +245,8 @@ public class RedisVectorStore implements VectorStore, InitializingBean {
 
 	}
 
+	private final boolean initializeSchema;
+
 	public static final String DEFAULT_URI = "redis://localhost:6379";
 
 	public static final String DEFAULT_INDEX_NAME = "spring-ai-index";
@@ -280,19 +281,20 @@ public class RedisVectorStore implements VectorStore, InitializingBean {
 
 	private final JedisPooled jedis;
 
-	private final EmbeddingClient embeddingClient;
+	private final EmbeddingModel embeddingModel;
 
 	private final RedisVectorStoreConfig config;
 
 	private FilterExpressionConverter filterExpressionConverter;
 
-	public RedisVectorStore(RedisVectorStoreConfig config, EmbeddingClient embeddingClient) {
+	public RedisVectorStore(RedisVectorStoreConfig config, EmbeddingModel embeddingModel, boolean initializeSchema) {
 
 		Assert.notNull(config, "Config must not be null");
-		Assert.notNull(embeddingClient, "Embedding client must not be null");
+		Assert.notNull(embeddingModel, "Embedding model must not be null");
+		this.initializeSchema = initializeSchema;
 
 		this.jedis = new JedisPooled(config.uri);
-		this.embeddingClient = embeddingClient;
+		this.embeddingModel = embeddingModel;
 		this.config = config;
 		this.filterExpressionConverter = new RedisFilterExpressionConverter(this.config.metadataFields);
 	}
@@ -305,7 +307,7 @@ public class RedisVectorStore implements VectorStore, InitializingBean {
 	public void add(List<Document> documents) {
 		try (Pipeline pipeline = this.jedis.pipelined()) {
 			for (Document document : documents) {
-				var embedding = this.embeddingClient.embed(document);
+				var embedding = this.embeddingModel.embed(document);
 				document.setEmbedding(embedding);
 
 				var fields = new HashMap<String, Object>();
@@ -365,7 +367,7 @@ public class RedisVectorStore implements VectorStore, InitializingBean {
 		returnFields.add(this.config.embeddingFieldName);
 		returnFields.add(this.config.contentFieldName);
 		returnFields.add(DISTANCE_FIELD_NAME);
-		var embedding = toFloatArray(this.embeddingClient.embed(request.getQuery()));
+		var embedding = toFloatArray(this.embeddingModel.embed(request.getQuery()));
 		Query query = new Query(queryString).addParam(EMBEDDING_PARAM_NAME, RediSearchUtil.toByteArray(embedding))
 			.returnFields(returnFields.toArray(new String[0]))
 			.setSortBy(DISTANCE_FIELD_NAME, true)
@@ -405,6 +407,10 @@ public class RedisVectorStore implements VectorStore, InitializingBean {
 	@Override
 	public void afterPropertiesSet() {
 
+		if (!this.initializeSchema) {
+			return;
+		}
+
 		// If index already exists don't do anything
 		if (this.jedis.ftList().contains(this.config.indexName)) {
 			return;
@@ -420,7 +426,7 @@ public class RedisVectorStore implements VectorStore, InitializingBean {
 
 	private Iterable<SchemaField> schemaFields() {
 		Map<String, Object> vectorAttrs = new HashMap<>();
-		vectorAttrs.put("DIM", this.embeddingClient.dimensions());
+		vectorAttrs.put("DIM", this.embeddingModel.dimensions());
 		vectorAttrs.put("DISTANCE_METRIC", DEFAULT_DISTANCE_METRIC);
 		vectorAttrs.put("TYPE", VECTOR_TYPE_FLOAT32);
 		List<SchemaField> fields = new ArrayList<>();
